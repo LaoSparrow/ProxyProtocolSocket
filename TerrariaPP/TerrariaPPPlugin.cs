@@ -24,7 +24,7 @@ namespace TerrariaPP
         public override string Name => "TerrariaPP";
         public override string Author => "LaoSparrow";
         public override string Description => "Accept proxy protocol v1 and v2 on Terraria server";
-        public override Version Version => new Version(1, 0);
+        public override Version Version => new Version(1, 1);
 
         public static string ConfigFileName = "TerrariaPP.json";
         public static string ConfigFilePath => Path.Combine(TShock.SavePath, ConfigFileName);

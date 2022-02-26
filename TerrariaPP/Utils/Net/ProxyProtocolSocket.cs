@@ -23,10 +23,8 @@ namespace TerrariaPP.Utils.Net
 
 		public ProxyProtocolSocket(TcpClient tcpClient) : base(tcpClient) { }
 
-		public ProxyProtocolSocket(TcpClient tcpClient, IPEndPoint remoteEndpoint)
+		public ProxyProtocolSocket(TcpClient tcpClient, IPEndPoint remoteEndpoint) : base(tcpClient)
         {
-			_connection = tcpClient;
-			_connection.NoDelay = true;
 			_remoteAddress = new TcpAddress(remoteEndpoint.Address, remoteEndpoint.Port);
         }
 
@@ -90,7 +88,6 @@ namespace TerrariaPP.Utils.Net
 							if (version == ProxyProtocolVersion.UNKNOWN)
                             {
 								Logger.Log($"Rejected unknown proxy protocol version from {client.Client.RemoteEndPoint}", LogLevel.INFO);
-								client.GetStream().Close();
 								client.Close();
 								return;
                             }
@@ -110,7 +107,6 @@ namespace TerrariaPP.Utils.Net
 						catch (Exception ex)
                         {
 							Logger.Log($"Connection {client.Client.RemoteEndPoint} caused\n{ex}", LogLevel.WARNING);
-							client.GetStream().Close();
 							client.Close();
                         }
 					});
