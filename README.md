@@ -1,4 +1,5 @@
-# TerrariaPP
-This plugin allows you to accept proxy protocol v1 & v2(have not tested) in Tshock Server to get the real client ip behind a load balancer. 
+# ProxyProtocolSocket
+This plugin helps TShock server to accept proxy protocol v1 and v2 (haven't been tested yet), and to get the real client ip address behind a proxy.
 
-The load balancer must either support proxy protocol v1 or v2 or otherwise the connection will be dropped. 
+
+Please note that TShock server will only allow proxied connections after installing this plugin.

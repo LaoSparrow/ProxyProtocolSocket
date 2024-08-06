@@ -1,13 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading.Tasks;
 
-namespace TerrariaPP.Utils.Net
+namespace ProxyProtocolSocket.Utils.Net
 {
     public class ProxyProtocolParserV1 : IProxyProtocolParser
     {
@@ -23,10 +18,10 @@ namespace TerrariaPP.Utils.Net
         private int _bufferPosition;
 
         private bool _isParsed;
-        private AddressFamily _addressFamily;
-        private ProxyProtocolCommand _protocolCommand;
-        private IPEndPoint _sourceEndpoint;
-        private IPEndPoint _destEndpoint;
+        private AddressFamily _addressFamily = AddressFamily.Unknown;
+        private ProxyProtocolCommand _protocolCommand = ProxyProtocolCommand.Unknown;
+        private IPEndPoint? _sourceEndpoint;
+        private IPEndPoint? _destEndpoint;
         #endregion
 
         public ProxyProtocolParserV1(NetworkStream stream, IPEndPoint remoteEndpoint, byte[] buffer, ref int bufferPosition)
@@ -89,7 +84,7 @@ namespace TerrariaPP.Utils.Net
             #region Do second check
             if (addressFamily == AddressFamily.Unspecified)
             {
-                _protocolCommand = ProxyProtocolCommand.LOCAL;
+                _protocolCommand = ProxyProtocolCommand.Local;
                 _sourceEndpoint = _remoteEndpoint;
                 _isParsed = true;
                 return;
@@ -118,18 +113,18 @@ namespace TerrariaPP.Utils.Net
             #endregion
 
             _addressFamily      = addressFamily;
-            _protocolCommand    = ProxyProtocolCommand.PROXY;
+            _protocolCommand    = ProxyProtocolCommand.Proxy;
             _sourceEndpoint     = sourceEP;
             _destEndpoint       = destEP;
         }
 
-        public async Task<IPEndPoint> GetSourceEndpoint()
+        public async Task<IPEndPoint?> GetSourceEndpoint()
         {
             await Parse();
             return _sourceEndpoint;
         }
 
-        public async Task<IPEndPoint> GetDestEndpoint()
+        public async Task<IPEndPoint?> GetDestEndpoint()
         {
             await Parse();
             return _destEndpoint;

@@ -1,28 +1,23 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading.Tasks;
-using TerrariaPP.Utils.Exts;
+using ProxyProtocolSocket.Utils.Net;
 
-namespace TerrariaPP.Utils.Net
+namespace ProxyProtocolSocket.Utils.Net
 {
     #region Enums
     public enum ProxyProtocolVersion
     {
         V1,
         V2,
-        UNKNOWN
+        Unknown
     }
 
     public enum ProxyProtocolCommand
     {
-        LOCAL,
-        PROXY,
-        UNKNOWN
+        Local,
+        Proxy,
+        Unknown
     }
     #endregion
 
@@ -43,16 +38,16 @@ namespace TerrariaPP.Utils.Net
         private int _bufferPosition                     = 0;
 
         private bool _isParserCached                    = false;
-        private IProxyProtocolParser _cachedParser      = null;
+        private IProxyProtocolParser? _cachedParser      = null;
         private ProxyProtocolVersion? _protocolVersion  = null;
         #endregion
 
         public ProxyProtocol(NetworkStream stream, IPEndPoint remoteEndpoint)
         {
             #region Args checking
-            if (stream == null)         throw new ArgumentNullException("argument 'stream' cannot be null");
+            if (stream == null)         throw new ArgumentNullException(nameof(stream));
             if (stream.CanRead != true) throw new     ArgumentException("argument 'stream' is unreadable");
-            if (remoteEndpoint == null) throw new ArgumentNullException("argument 'remoteEndpoint' cannot be null");
+            if (remoteEndpoint == null) throw new ArgumentNullException(nameof(remoteEndpoint));
             #endregion
 
             #region Filling members
@@ -64,24 +59,48 @@ namespace TerrariaPP.Utils.Net
         #region Public methods
         public async Task Parse()
         {
-            IProxyProtocolParser parser = await GetParser();
+            var parser = await GetParser();
+            if (parser == null)
+                return;
             Logger.Log($"Calling parser {parser.GetType().Name}");
-            await parser?.Parse();
+            await parser.Parse();
         }
 
-        public async Task<IPEndPoint> GetSourceEndpoint() =>
-            await (await GetParser())?.GetSourceEndpoint();
+        public async Task<IPEndPoint?> GetSourceEndpoint()
+        {
+            var parser = await GetParser();
+            if (parser == null)
+                return null;
+            return await parser.GetSourceEndpoint();
+        }
 
-        public async Task<IPEndPoint> GetDestEndpoint() =>
-            await (await GetParser())?.GetDestEndpoint();
+        public async Task<IPEndPoint?> GetDestEndpoint()
+        {
+            var parser = await GetParser();
+            if (parser == null)
+                return null;
+            return await parser.GetDestEndpoint();
+        }
 
-        public async Task<AddressFamily> GetAddressFamily() =>
-            await (await GetParser())?.GetAddressFamily();
+        public async Task<AddressFamily> GetAddressFamily()
+        {
+            var parser = await GetParser();
+            // return Unknown when the header is unparseable
+            // return Unspecified when the address family written in the header is "UNKNOWN"
+            if (parser == null)
+                return AddressFamily.Unknown;
+            return await parser.GetAddressFamily();
+        }
 
-        public async Task<ProxyProtocolCommand> GetCommand() =>
-            await (await GetParser())?.GetCommand();
+        public async Task<ProxyProtocolCommand> GetCommand()
+        {
+            var parser = await GetParser();
+            if (parser == null)
+                return ProxyProtocolCommand.Unknown;
+            return await parser.GetCommand();
+        }
 
-        public async Task<IProxyProtocolParser> GetParser()
+        public async Task<IProxyProtocolParser?> GetParser()
         {
             // Read from cache
             if (_isParserCached)
@@ -115,7 +134,7 @@ namespace TerrariaPP.Utils.Net
 
             Logger.Log("Getting version info");
 
-            _protocolVersion = ProxyProtocolVersion.UNKNOWN;
+            _protocolVersion = ProxyProtocolVersion.Unknown;
             // Check if is version 1
             await GetBytesToPosition(V1_SIGNATURE.Length);
             if (IsVersion1(_buffer))

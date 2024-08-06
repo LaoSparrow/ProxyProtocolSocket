@@ -1,13 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace TerrariaPP.Utils.Net
+namespace ProxyProtocolSocket.Utils.Net
 {
     public class ProxyProtocolParserV2 : IProxyProtocolParser
     {
@@ -24,19 +18,19 @@ namespace TerrariaPP.Utils.Net
         private int _bufferPosition;
 
         private bool _isParsed;
-        private ProxyProtocolCommand _protocolCommand;
-        private AddressFamily _addressFamily;
-        private IPEndPoint _sourceEndpoint;
-        private IPEndPoint _destEndpoint;
+        private AddressFamily _addressFamily = AddressFamily.Unknown;
+        private ProxyProtocolCommand _protocolCommand = ProxyProtocolCommand.Unknown;
+        private IPEndPoint? _sourceEndpoint;
+        private IPEndPoint? _destEndpoint;
         #endregion
 
         public ProxyProtocolParserV2(NetworkStream stream, IPEndPoint remoteEndpoint, byte[] buffer, ref int bufferPosition)
         {
             #region Args checking
-            if (stream == null) throw new ArgumentNullException("argument 'stream' cannot be null");
+            if (stream == null) throw new ArgumentNullException(nameof(stream));
             if (stream.CanRead != true) throw new ArgumentException("argument 'stream' is unreadable");
-            if (remoteEndpoint == null) throw new ArgumentNullException("argument 'remoteEndpoint' cannot be null");
-            if (buffer == null) throw new ArgumentNullException("argument 'buffer' cannot be null");
+            if (remoteEndpoint == null) throw new ArgumentNullException(nameof(remoteEndpoint));
+            if (buffer == null) throw new ArgumentNullException(nameof(buffer));
             if (bufferPosition > buffer.Length) throw new ArgumentException("argument 'bufferPosition' is larger than 'buffer.Length'");
             #endregion
 
@@ -64,11 +58,11 @@ namespace TerrariaPP.Utils.Net
             switch (_buffer[12] & 0x0F)
             {
                 case 0x00:
-                    command = ProxyProtocolCommand.LOCAL;
+                    command = ProxyProtocolCommand.Local;
                     break;
 
                 case 0x01:
-                    command = ProxyProtocolCommand.PROXY;
+                    command = ProxyProtocolCommand.Proxy;
                     break;
 
                 default:
@@ -124,7 +118,7 @@ namespace TerrariaPP.Utils.Net
 
             #region Getting address data and check if need to parse address data
             await GetBytesToPosition(SIGNATURE_LENGNTH + addressLength);
-            if (command != ProxyProtocolCommand.PROXY || family == AddressFamily.Unspecified)
+            if (command != ProxyProtocolCommand.Proxy || family == AddressFamily.Unspecified)
             {
                 _protocolCommand = command;
                 _addressFamily = family;
@@ -168,13 +162,13 @@ namespace TerrariaPP.Utils.Net
             _destEndpoint = destEP;
         }
 
-        public async Task<IPEndPoint> GetSourceEndpoint()
+        public async Task<IPEndPoint?> GetSourceEndpoint()
         {
             await Parse();
             return _sourceEndpoint;
         }
 
-        public async Task<IPEndPoint> GetDestEndpoint()
+        public async Task<IPEndPoint?> GetDestEndpoint()
         {
             await Parse();
             return _destEndpoint;

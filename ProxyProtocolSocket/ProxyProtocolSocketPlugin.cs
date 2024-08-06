@@ -1,38 +1,30 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
+﻿using System.Reflection;
+using OTAPI;
+using ProxyProtocolSocket.Utils;
 using Terraria;
-using Terraria.Net.Sockets;
 using TerrariaApi.Server;
-
 using TShockAPI;
 using TShockAPI.Configuration;
 using TShockAPI.Hooks;
 
-using TerrariaPP.Utils.Net;
-using TerrariaPP.Utils;
-
-namespace TerrariaPP
+namespace ProxyProtocolSocket
 {
     [ApiVersion(2, 1)]
-    public class TerrariaPPPlugin : TerrariaPlugin
+    // ReSharper disable once ClassNeverInstantiated.Global
+    public class ProxyProtocolSocketPlugin : TerrariaPlugin
     {
-        public override string Name => "TerrariaPP";
+        public override string Name => "ProxyProtocolSocket";
         public override string Author => "LaoSparrow";
-        public override string Description => "Accept proxy protocol v1 and v2 on Terraria server";
-        public override Version Version => new Version(1, 1);
+        public override string Description => "Proxy Protocol on TShock";
+        public override Version Version => Assembly.GetExecutingAssembly().GetName().Version!;
 
-        public static string ConfigFileName = "TerrariaPP.json";
+        public static string ConfigFileName = "ProxyProtocolSocket.json";
         public static string ConfigFilePath => Path.Combine(TShock.SavePath, ConfigFileName);
-        public static ConfigFile<TerrariaPPSettings> Config = new ConfigFile<TerrariaPPSettings>();
+        public static ConfigFile<ProxyProtocolSocketSettings> Config = new();
 
-        public TerrariaPPPlugin(Main game) : base(game)
+        public ProxyProtocolSocketPlugin(Main game) : base(game)
         {
-            // Must be the last to handle "Hooks.Net.Socket.Create"
+            // Must be the last to handle "OTAPI.Hooks.Netplay.CreateTcpListener"
             // Otherwise the plugin will not function
             Order = 1000;
         }
@@ -42,7 +34,7 @@ namespace TerrariaPP
             ServerApi.Hooks.GameInitialize.Register(this, OnGameInitialize);
             GeneralHooks.ReloadEvent += OnReload;
             // Override the netplay listening socket
-            OTAPI.Hooks.Net.Socket.Create += OnSocketCreate;
+            OTAPI.Hooks.Netplay.CreateTcpListener += OnSocketCreate;
         }
 
         protected override void Dispose(bool disposing)
@@ -51,7 +43,7 @@ namespace TerrariaPP
             {
                 ServerApi.Hooks.GameInitialize.Deregister(this, OnGameInitialize);
                 GeneralHooks.ReloadEvent -= OnReload;
-                OTAPI.Hooks.Net.Socket.Create -= OnSocketCreate;
+                OTAPI.Hooks.Netplay.CreateTcpListener -= OnSocketCreate;
             }
             base.Dispose(disposing);
         }
@@ -65,11 +57,11 @@ namespace TerrariaPP
 
         private void OnReload(ReloadEventArgs args) => LoadConfig();
 
-        private ISocket OnSocketCreate()
+        private void OnSocketCreate(object? _, Hooks.Netplay.CreateTcpListenerEventArgs args)
         {
             Logger.Log("OnSocketCreate called!");
-            Logger.Log($"Listening on port {Netplay.ListenPort} through proxy protocol v1 and v2", LogLevel.INFO);
-            return new ProxyProtocolSocket();
+            Logger.Log($"Listening on port {Netplay.ListenPort} through proxy protocol v1 and v2", LogLevel.Info);
+            args.Result = new Utils.Net.ProxyProtocolSocket();
         }
 
         private static void LoadConfig()
