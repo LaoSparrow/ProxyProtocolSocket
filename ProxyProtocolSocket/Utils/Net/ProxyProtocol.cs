@@ -27,18 +27,20 @@ namespace ProxyProtocolSocket.Utils.Net
         private static readonly byte[] V1_SIGNATURE = Encoding.ASCII.GetBytes("PROXY");
         private static readonly byte[] V2_OR_ABOVE_SIGNATURE = { 0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A };
         private const int V2_OR_ABOVE_ID_LENGTH = 16;
-        private const int BUFFER_SIZE = 107;
+        private const int MAX_BUFFER_SIZE = 232;
         #endregion
 
         #region Members
         private NetworkStream _stream;
         private IPEndPoint _remoteEndpoint;
 
-        private byte[] _buffer                          = new byte[BUFFER_SIZE];
-        private int _bufferPosition                     = 0;
+        private byte[] _buffer                          = new byte[MAX_BUFFER_SIZE];
+        // i.e. the end of _buffer
+        // _buffer[_bufferSize - 1] is the last byte read from the stream
+        private int _bufferSize                         = 0;
 
         private bool _isParserCached                    = false;
-        private IProxyProtocolParser? _cachedParser      = null;
+        private IProxyProtocolParser? _cachedParser     = null;
         private ProxyProtocolVersion? _protocolVersion  = null;
         #endregion
 
@@ -62,7 +64,7 @@ namespace ProxyProtocolSocket.Utils.Net
             var parser = await GetParser();
             if (parser == null)
                 return;
-            Logger.Log($"Calling parser {parser.GetType().Name}");
+            Logger.Log($"[{_remoteEndpoint}] calling {parser.GetType().Name}.Parse()");
             await parser.Parse();
         }
 
@@ -106,22 +108,14 @@ namespace ProxyProtocolSocket.Utils.Net
             if (_isParserCached)
                 return _cachedParser;
 
-            Logger.Log("Getting parser");
+            Logger.Log($"[{_remoteEndpoint}] selecting parser...");
             // Get parser corresponding to version
-            switch (await GetVersion())
+            _cachedParser = await GetVersion() switch
             {
-                case ProxyProtocolVersion.V1:
-                    _cachedParser = new ProxyProtocolParserV1(_stream, _remoteEndpoint, _buffer, ref _bufferPosition);
-                    break;
-
-                case ProxyProtocolVersion.V2:
-                    _cachedParser = new ProxyProtocolParserV2(_stream, _remoteEndpoint, _buffer, ref _bufferPosition);
-                    break;
-
-                default:
-                    _cachedParser = null;
-                    break;
-            }
+                ProxyProtocolVersion.V1 => new ProxyProtocolParserV1(_stream, _remoteEndpoint, _buffer, _bufferSize),
+                ProxyProtocolVersion.V2 => new ProxyProtocolParserV2(_stream, _remoteEndpoint, _buffer, _bufferSize),
+                _ => null
+            };
             _isParserCached = true;
             return _cachedParser;
         }
@@ -132,21 +126,21 @@ namespace ProxyProtocolSocket.Utils.Net
             if (_protocolVersion != null)
                 return (ProxyProtocolVersion)_protocolVersion;
 
-            Logger.Log("Getting version info");
+            Logger.Log($"[{_remoteEndpoint}] interpreting protocol version...");
 
             _protocolVersion = ProxyProtocolVersion.Unknown;
             // Check if is version 1
-            await GetBytesToPosition(V1_SIGNATURE.Length);
+            await GetBytesTillBufferSize(V1_SIGNATURE.Length);
             if (IsVersion1(_buffer))
                 _protocolVersion = ProxyProtocolVersion.V1;
             else
             {
                 // Check if is version 2 or above
-                await GetBytesToPosition(V2_OR_ABOVE_ID_LENGTH);
+                await GetBytesTillBufferSize(V2_OR_ABOVE_ID_LENGTH);
                 if (IsVersion2OrAbove(_buffer))
                 {
                     // Check versions
-                    if (IsVersion2(_buffer, true))
+                    if (IsVersion2(_buffer, false))
                         _protocolVersion = ProxyProtocolVersion.V2;
                 }
             }
@@ -156,16 +150,16 @@ namespace ProxyProtocolSocket.Utils.Net
         #endregion
 
         #region Private methods
-        private async Task GetBytesToPosition(int position)
+        private async Task GetBytesTillBufferSize(int size)
         {
-            if (position <= _bufferPosition)
+            if (size <= _bufferSize)
                 return;
-            await GetBytesFromStream(position - _bufferPosition);
+            await GetBytesFromStream(size - _bufferSize);
         }
 
         private async Task GetBytesFromStream(int length)
         {
-            if ((_bufferPosition + length) > _buffer.Length)
+            if ((_bufferSize + length) > _buffer.Length)
                 throw new InternalBufferOverflowException();
 
             while (length > 0)
@@ -173,18 +167,26 @@ namespace ProxyProtocolSocket.Utils.Net
                 if (!_stream.DataAvailable)
                     throw new EndOfStreamException();
 
-                int count = await _stream.ReadAsync(_buffer, _bufferPosition, length);
+                var count = await _stream.ReadAsync(_buffer.AsMemory(_bufferSize, length));
                 length -= count;
-                _bufferPosition += count;
+                _bufferSize += count;
             }
         }
         #endregion
 
         #region Public static methods
-        public static bool IsVersion1(byte[] header) => header.Take(V1_SIGNATURE.Length).SequenceEqual(V1_SIGNATURE);
-        public static bool IsVersion2OrAbove(byte[] header) => header.Take(V2_OR_ABOVE_SIGNATURE.Length).SequenceEqual(V2_OR_ABOVE_SIGNATURE);
-        public static bool IsVersion2(byte[] header, bool checkedSignature = false) =>
-            checkedSignature || IsVersion2OrAbove(header) &&
+        
+        // ReSharper disable once MemberCanBePrivate.Global
+        public static bool IsVersion1(ReadOnlySpan<byte> header) =>
+            header[..V1_SIGNATURE.Length].SequenceEqual(V1_SIGNATURE);
+        
+        // ReSharper disable once MemberCanBePrivate.Global
+        public static bool IsVersion2OrAbove(ReadOnlySpan<byte> header) =>
+            header[..V2_OR_ABOVE_SIGNATURE.Length].SequenceEqual(V2_OR_ABOVE_SIGNATURE);
+        
+        // ReSharper disable once MemberCanBePrivate.Global
+        public static bool IsVersion2(ReadOnlySpan<byte> header, bool checkSignature = true) =>
+            (!checkSignature || IsVersion2OrAbove(header)) &&
             (header[12] & 0xF0) == 0x20;
         #endregion
     }

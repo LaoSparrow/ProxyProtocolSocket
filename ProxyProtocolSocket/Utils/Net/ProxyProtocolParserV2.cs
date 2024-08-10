@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using System.Buffers.Binary;
+using System.Net;
 using System.Net.Sockets;
 
 namespace ProxyProtocolSocket.Utils.Net
@@ -15,132 +16,127 @@ namespace ProxyProtocolSocket.Utils.Net
         private NetworkStream _stream;
         private IPEndPoint _remoteEndpoint;
         private byte[] _buffer;
-        private int _bufferPosition;
+        private int _bufferSize;
 
-        private bool _isParsed;
+        private bool _hasParsed;
         private AddressFamily _addressFamily = AddressFamily.Unknown;
         private ProxyProtocolCommand _protocolCommand = ProxyProtocolCommand.Unknown;
         private IPEndPoint? _sourceEndpoint;
         private IPEndPoint? _destEndpoint;
         #endregion
 
-        public ProxyProtocolParserV2(NetworkStream stream, IPEndPoint remoteEndpoint, byte[] buffer, ref int bufferPosition)
+        public ProxyProtocolParserV2(NetworkStream stream, IPEndPoint remoteEndpoint, byte[] buffer, int bufferSize)
         {
             #region Args checking
             if (stream == null) throw new ArgumentNullException(nameof(stream));
-            if (stream.CanRead != true) throw new ArgumentException("argument 'stream' is unreadable");
+            if (stream.CanRead != true) throw new ArgumentException($"argument '{nameof(stream)}' is unreadable");
             if (remoteEndpoint == null) throw new ArgumentNullException(nameof(remoteEndpoint));
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
-            if (bufferPosition > buffer.Length) throw new ArgumentException("argument 'bufferPosition' is larger than 'buffer.Length'");
+            if (bufferSize > buffer.Length) throw new ArgumentException($"argument '{nameof(bufferSize)}' is larger than '{nameof(buffer)}.Length'");
             #endregion
 
             #region Filling members
             _stream = stream;
             _remoteEndpoint = remoteEndpoint;
             _buffer = buffer;
-            _bufferPosition = bufferPosition;
+            _bufferSize = bufferSize;
             #endregion
         }
 
         #region Public methods
         public async Task Parse()
         {
-            if (_isParsed)
+            if (_hasParsed)
                 return;
-            _isParsed = true;
-            Logger.Log("Parsing header");
+            _hasParsed = true;
+            Logger.Log($"[{_remoteEndpoint}] parsing header...");
 
-            // Getting signature
-            await GetBytesToPosition(SIGNATURE_LENGNTH);
+            // load full signature from stream
+            await GetBytesTillBufferSize(SIGNATURE_LENGNTH);
+            if (ProxyProtocolSocketPlugin.Config.Settings.LogLevel == LogLevel.Debug)
+                Logger.Log($"[{_remoteEndpoint}] signature content: {Convert.ToHexString(_buffer[.._bufferSize])}");
 
             #region Parsing command
-            ProxyProtocolCommand command;
-            switch (_buffer[12] & 0x0F)
+
+            var command = (_buffer[12] & 0x0F) switch
             {
-                case 0x00:
-                    command = ProxyProtocolCommand.Local;
-                    break;
+                0x00 => ProxyProtocolCommand.Local,
+                0x01 => ProxyProtocolCommand.Proxy,
+                _ => throw new Exception("Invalid command")
+            };
 
-                case 0x01:
-                    command = ProxyProtocolCommand.Proxy;
-                    break;
-
-                default:
-                    throw new Exception("Invalid command");
-            }
             #endregion
 
             #region Parsing address family and getting min address length
-            AddressFamily family;
-            int minAddressLength;
-            switch (_buffer[13] & 0xF0)
+
+            var family = (_buffer[13] & 0xF0) switch
             {
-                case 0x00:
-                    family = AddressFamily.Unspecified;
-                    minAddressLength = 0;
-                    break;
-
-                case 0x10:
-                    family = AddressFamily.InterNetwork;
-                    minAddressLength = 12;
-                    break;
-
-                case 0x20:
-                    family = AddressFamily.InterNetworkV6;
-                    minAddressLength = 36;
-                    break;
-
-                case 0x30:
-                    family = AddressFamily.Unix;
-                    minAddressLength = 216;
-                    break;
-
-                default:
-                    throw new Exception("Invalid address family");
-            }
+                0x00 => AddressFamily.Unspecified,
+                0x10 => AddressFamily.InterNetwork,
+                0x20 => AddressFamily.InterNetworkV6,
+                0x30 => AddressFamily.Unix,
+                _ => throw new Exception("Invalid address family")
+            };
+            // ReSharper disable once SwitchExpressionHandlesSomeKnownEnumValuesWithExceptionInDefault
+            var minAddressLength = family switch
+            {
+                AddressFamily.Unspecified => 0,
+                AddressFamily.InterNetwork => 12,
+                AddressFamily.InterNetworkV6 => 36,
+                AddressFamily.Unix => 216,
+                _ => throw new Exception("Invalid address family")
+            };
+            
             // TODO: Implement address family UNIX
             if (family == AddressFamily.Unix)
-                throw new NotImplementedException("Address family UNIX haven't implemented yet");
+                throw new NotImplementedException("Address family UNIX haven't been implemented yet");
+            
             #endregion
 
             #region Parsing transport protocol
-            // TODO: Parsing transport protocol
+            // TODO: Parse transport protocol
             #endregion
 
             #region Parsing and checking address length
-            int addressLength = GetAddressLength(_buffer);
-            Logger.Log($"Address length is {addressLength}");
+            
+            var addressLength = GetAddressLength(_buffer);
+            Logger.Log($"[{_remoteEndpoint}] Address length is {addressLength}");
             if (addressLength < minAddressLength)
-                throw new Exception("Address length is too small, is that you set the endian incorrectly?");
+                throw new Exception("Address length is too short");
             if (SIGNATURE_LENGNTH + addressLength > _buffer.Length)
-                throw new Exception("Address length is too large, is that you set the endian incorrectly?");
+                throw new Exception("Address length is too long");
             #endregion
 
             #region Getting address data and check if need to parse address data
-            await GetBytesToPosition(SIGNATURE_LENGNTH + addressLength);
+            
+            await GetBytesTillBufferSize(SIGNATURE_LENGNTH + addressLength);
+            if (ProxyProtocolSocketPlugin.Config.Settings.LogLevel == LogLevel.Debug)
+                Logger.Log($"[{_remoteEndpoint}] header content: {Convert.ToHexString(_buffer[.._bufferSize])}");
             if (command != ProxyProtocolCommand.Proxy || family == AddressFamily.Unspecified)
             {
                 _protocolCommand = command;
                 _addressFamily = family;
                 return;
             }
+            
             #endregion
 
             #region Parsing address data
-            IPEndPoint sourceEP;
-            IPEndPoint destEP;
+            
+            IPEndPoint sourceEp;
+            IPEndPoint destEp;
             try
             {
                 switch (family)
                 {
                     case AddressFamily.InterNetwork:
-                        sourceEP = new IPEndPoint(GetSourceAddressIPv4(_buffer), GetSourcePortIPv4(_buffer));
-                        destEP = new IPEndPoint(GetDestinationAddressIPv4(_buffer), GetDestinationPortIPv4(_buffer));
+                        sourceEp = new IPEndPoint(GetSourceAddressIPv4(_buffer), GetSourcePortIPv4(_buffer));
+                        destEp = new IPEndPoint(GetDestinationAddressIPv4(_buffer), GetDestinationPortIPv4(_buffer));
                     break;
 
                     case AddressFamily.InterNetworkV6:
-                        sourceEP = new IPEndPoint(GetSourceAddressIPv6(_buffer), GetSourcePortIPv6(_buffer));
-                        destEP = new IPEndPoint(GetDestinationAddressIPv6(_buffer), GetDestinationPortIPv6(_buffer));
+                        sourceEp = new IPEndPoint(GetSourceAddressIPv6(_buffer), GetSourcePortIPv6(_buffer));
+                        destEp = new IPEndPoint(GetDestinationAddressIPv6(_buffer), GetDestinationPortIPv6(_buffer));
                         break;
 
                     case AddressFamily.Unix:
@@ -158,8 +154,8 @@ namespace ProxyProtocolSocket.Utils.Net
 
             _protocolCommand = command;
             _addressFamily = family;
-            _sourceEndpoint = sourceEP;
-            _destEndpoint = destEP;
+            _sourceEndpoint = sourceEp;
+            _destEndpoint = destEp;
         }
 
         public async Task<IPEndPoint?> GetSourceEndpoint()
@@ -188,18 +184,18 @@ namespace ProxyProtocolSocket.Utils.Net
         #endregion
 
         #region Private methods
-        private async Task GetBytesToPosition(int position)
+        private async Task GetBytesTillBufferSize(int size)
         {
-            Logger.Log($"Getting bytes to position {position} from {_remoteEndpoint}");
-            if (position <= _bufferPosition)
+            Logger.Log($"[{_remoteEndpoint}] extending buffer size to {size}");
+            if (size <= _bufferSize)
                 return;
-            await GetBytesFromStream(position - _bufferPosition);
+            await GetBytesFromStream(size - _bufferSize);
         }
 
         private async Task GetBytesFromStream(int length)
         {
-            Logger.Log($"Getting {length} bytes from {_remoteEndpoint}");
-            if ((_bufferPosition + length) > _buffer.Length)
+            Logger.Log($"[{_remoteEndpoint}] getting {length} bytes from stream");
+            if (_bufferSize + length > _buffer.Length)
                 throw new InternalBufferOverflowException();
 
             while (length > 0)
@@ -207,51 +203,48 @@ namespace ProxyProtocolSocket.Utils.Net
                 if (!_stream.DataAvailable)
                     throw new EndOfStreamException();
 
-                int count = await _stream.ReadAsync(_buffer, _bufferPosition, length);
+                var count = await _stream.ReadAsync(_buffer.AsMemory(_bufferSize, length));
                 length -= count;
-                _bufferPosition += count;
+                _bufferSize += count;
             }
         }
         #endregion
 
         #region Private static methods
-        private static int GetAddressLength(byte[] signature) =>
-            BytesToUInt16(signature.Skip(SIGNATURE_LENGNTH - 2).Take(2).ToArray());
+        private static int GetAddressLength(ReadOnlySpan<byte> signature) =>
+            BinaryPrimitives.ReadUInt16BigEndian(BufferSegment(signature, SIGNATURE_LENGNTH - 2, 2));
 
         #region IPv4
-        private static IPAddress GetSourceAddressIPv4(byte[] header) =>
-            new IPAddress(header.Skip(SIGNATURE_LENGNTH).Take(IPV4_ADDR_LENGTH).ToArray());
+        private static IPAddress GetSourceAddressIPv4(ReadOnlySpan<byte> header) =>
+            new IPAddress(BufferSegment(header, SIGNATURE_LENGNTH, IPV4_ADDR_LENGTH));
 
-        private static IPAddress GetDestinationAddressIPv4(byte[] header) =>
-            new IPAddress(header.Skip(SIGNATURE_LENGNTH + IPV4_ADDR_LENGTH).Take(IPV4_ADDR_LENGTH).ToArray());
+        private static IPAddress GetDestinationAddressIPv4(ReadOnlySpan<byte> header) =>
+            new IPAddress(BufferSegment(header, SIGNATURE_LENGNTH + IPV4_ADDR_LENGTH, IPV4_ADDR_LENGTH));
 
-        private static int GetSourcePortIPv4(byte[] header) =>
-            BytesToUInt16(header.Skip(SIGNATURE_LENGNTH + 2 * IPV4_ADDR_LENGTH).Take(2).ToArray());
+        private static int GetSourcePortIPv4(ReadOnlySpan<byte> header) =>
+            BinaryPrimitives.ReadUInt16BigEndian(BufferSegment(header, SIGNATURE_LENGNTH + 2*IPV4_ADDR_LENGTH, 2));
 
-        private static int GetDestinationPortIPv4(byte[] header) =>
-            BytesToUInt16(header.Skip(SIGNATURE_LENGNTH + 2 * IPV4_ADDR_LENGTH + 2).Take(2).ToArray());
+        private static int GetDestinationPortIPv4(ReadOnlySpan<byte> header) =>
+            BinaryPrimitives.ReadUInt16BigEndian(BufferSegment(header, SIGNATURE_LENGNTH + 2*IPV4_ADDR_LENGTH + 2, 2));
         #endregion
 
         #region IPv6
-        private static IPAddress GetSourceAddressIPv6(byte[] header) =>
-            new IPAddress(header.Skip(SIGNATURE_LENGNTH).Take(IPV6_ADDR_LENGTH).ToArray());
+        private static IPAddress GetSourceAddressIPv6(ReadOnlySpan<byte> header) =>
+            new IPAddress(BufferSegment(header, SIGNATURE_LENGNTH, IPV6_ADDR_LENGTH));
 
-        private static IPAddress GetDestinationAddressIPv6(byte[] header) =>
-            new IPAddress(header.Skip(SIGNATURE_LENGNTH + IPV6_ADDR_LENGTH).Take(IPV6_ADDR_LENGTH).ToArray());
+        private static IPAddress GetDestinationAddressIPv6(ReadOnlySpan<byte> header) =>
+            new IPAddress(BufferSegment(header, SIGNATURE_LENGNTH + IPV6_ADDR_LENGTH, IPV6_ADDR_LENGTH));
 
-        private static int GetSourcePortIPv6(byte[] header) =>
-            BytesToUInt16(header.Skip(SIGNATURE_LENGNTH + 2 * IPV6_ADDR_LENGTH).Take(2).ToArray());
+        private static int GetSourcePortIPv6(ReadOnlySpan<byte> header) =>
+            BinaryPrimitives.ReadUInt16BigEndian(BufferSegment(header, SIGNATURE_LENGNTH + 2*IPV6_ADDR_LENGTH, 2));
 
-        private static int GetDestinationPortIPv6(byte[] header) =>
-            BytesToUInt16(header.Skip(SIGNATURE_LENGNTH + 2 * IPV6_ADDR_LENGTH + 2).Take(2).ToArray());
+        private static int GetDestinationPortIPv6(ReadOnlySpan<byte> header) =>
+            BinaryPrimitives.ReadUInt16BigEndian(BufferSegment(header, SIGNATURE_LENGNTH + 2*IPV6_ADDR_LENGTH + 2, 2));
         #endregion
 
-        private static int BytesToUInt16(byte[] bytes)
-        {
-            if (BitConverter.IsLittleEndian)
-                Array.Reverse(bytes);
-            return BitConverter.ToInt16(bytes, 0);
-        }
+        private static ReadOnlySpan<byte> BufferSegment(ReadOnlySpan<byte> bytes, int offset, int length) =>
+            bytes[offset..(offset + length)];
+
         #endregion
     }
 }

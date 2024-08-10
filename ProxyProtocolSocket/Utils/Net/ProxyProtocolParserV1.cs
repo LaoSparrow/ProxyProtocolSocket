@@ -9,113 +9,113 @@ namespace ProxyProtocolSocket.Utils.Net
         #region Constants
         private const string DELIMITER = "\r\n";
         private const char SEPARATOR = ' ';
+        private const int MAX_HEADER_SIZE = 107;
         #endregion
 
         #region Members
         private NetworkStream _stream;
         private IPEndPoint _remoteEndpoint;
         private byte[] _buffer;
-        private int _bufferPosition;
+        private int _bufferSize;
 
-        private bool _isParsed;
+        private bool _hasParsed;
         private AddressFamily _addressFamily = AddressFamily.Unknown;
         private ProxyProtocolCommand _protocolCommand = ProxyProtocolCommand.Unknown;
         private IPEndPoint? _sourceEndpoint;
         private IPEndPoint? _destEndpoint;
         #endregion
 
-        public ProxyProtocolParserV1(NetworkStream stream, IPEndPoint remoteEndpoint, byte[] buffer, ref int bufferPosition)
+        public ProxyProtocolParserV1(NetworkStream stream, IPEndPoint remoteEndpoint, byte[] buffer, int bufferSize)
         {
             #region Args checking
-            if (stream == null)                 throw new ArgumentNullException("argument 'stream' cannot be null");
-            if (stream.CanRead != true)         throw new     ArgumentException("argument 'stream' is unreadable");
-            if (remoteEndpoint == null)         throw new ArgumentNullException("argument 'remoteEndpoint' cannot be null");
-            if (buffer == null)                 throw new ArgumentNullException("argument 'buffer' cannot be null");
-            if (bufferPosition > buffer.Length) throw new     ArgumentException("argument 'bufferPosition' is larger than 'buffer.Length'");
+            if (stream == null)                 throw new ArgumentNullException(nameof(stream));
+            if (stream.CanRead != true)         throw new     ArgumentException($"argument 'stream' is unreadable");
+            if (remoteEndpoint == null)         throw new ArgumentNullException(nameof(remoteEndpoint));
+            if (buffer == null)                 throw new ArgumentNullException(nameof(buffer));
+            if (bufferSize > buffer.Length)      throw new     ArgumentException($"argument '{nameof(bufferSize)}' is larger than '{nameof(buffer)}.Length'");
             #endregion
 
             #region Filling members
             _stream = stream;
             _remoteEndpoint = remoteEndpoint;
             _buffer = buffer;
-            _bufferPosition = bufferPosition;
+            _bufferSize = bufferSize;
             #endregion
         }
 
         #region Public methods
         public async Task Parse()
         {
-            if (_isParsed)
+            if (_hasParsed)
                 return;
-            _isParsed = true;
-            Logger.Log("Parsing header");
+            _hasParsed = true;
+            Logger.Log($"[{_remoteEndpoint}] parsing header...");
 
             #region Getting full header and do first check
+            
             await GetFullHeader();
-            if (_bufferPosition < 2 || _buffer[_bufferPosition - 2] != '\r')
-                throw new Exception("Header must end with CRLF");
-
-            string[] tokens = Encoding.ASCII.GetString(_buffer.Take(_bufferPosition - 2).ToArray()).Split(SEPARATOR);
+            if (ProxyProtocolSocketPlugin.Config.Settings.LogLevel == LogLevel.Debug)
+                Logger.Log($"[{_remoteEndpoint}] header content: {Convert.ToHexString(_buffer[.._bufferSize])}");
+            var tokens = Encoding.ASCII.GetString(_buffer[..(_bufferSize - 2)]).Split(SEPARATOR);
             if (tokens.Length < 2)
                 throw new Exception("Unable to read AddressFamily and protocol");
+            
             #endregion
 
             #region Parse address family
-            AddressFamily addressFamily;
-            switch (tokens[1])
+            
+            Logger.Log($"[{_remoteEndpoint}] parsing address family...");
+            var addressFamily = tokens[1] switch
             {
-                case "TCP4":
-                    addressFamily = AddressFamily.InterNetwork;
-                    break;
+                "TCP4" => AddressFamily.InterNetwork,
+                "TCP6" => AddressFamily.InterNetworkV6,
+                "UNKNOWN" => AddressFamily.Unspecified,
+                _ => throw new Exception("Invalid address family")
+            };
 
-                case "TCP6":
-                    addressFamily = AddressFamily.InterNetworkV6;
-                    break;
-
-                case "UNKNOWN":
-                    addressFamily = AddressFamily.Unspecified;
-                    break;
-
-                default:
-                    throw new Exception("Invalid address family");
-            }
             #endregion
 
             #region Do second check
+            
             if (addressFamily == AddressFamily.Unspecified)
             {
                 _protocolCommand = ProxyProtocolCommand.Local;
                 _sourceEndpoint = _remoteEndpoint;
-                _isParsed = true;
+                _hasParsed = true;
                 return;
             }
-            else if (tokens.Length < 6)
-                throw new Exception("Unable to read ipaddresses and ports");
+            
+            if (tokens.Length < 6)
+                throw new Exception("Impossible to read ip addresses and ports as the number of tokens is less than 6");
+
             #endregion
 
             #region Parse source and dest end point
-            IPEndPoint sourceEP;
-            IPEndPoint destEP;
+            
+            Logger.Log($"[{_remoteEndpoint}] parsing endpoints...");
+            IPEndPoint sourceEp;
+            IPEndPoint destEp;
             try
             {
                 // TODO: IP format validation
-                IPAddress sourceAddr = IPAddress.Parse(tokens[2]);
-                IPAddress destAddr = IPAddress.Parse(tokens[3]);
-                int sourcePort = Convert.ToInt32(tokens[4]);
-                int destPort = Convert.ToInt32(tokens[5]);
-                sourceEP = new IPEndPoint(sourceAddr, sourcePort);
-                destEP = new IPEndPoint(destAddr, destPort);
+                var sourceAddr = IPAddress.Parse(tokens[2]);
+                var destAddr = IPAddress.Parse(tokens[3]);
+                var sourcePort = Convert.ToInt32(tokens[4]);
+                var destPort = Convert.ToInt32(tokens[5]);
+                sourceEp = new IPEndPoint(sourceAddr, sourcePort);
+                destEp = new IPEndPoint(destAddr, destPort);
             }
             catch (Exception ex)
             {
                 throw new Exception("Unable to parse ip addresses and ports", ex);
             }
+            
             #endregion
 
             _addressFamily      = addressFamily;
             _protocolCommand    = ProxyProtocolCommand.Proxy;
-            _sourceEndpoint     = sourceEP;
-            _destEndpoint       = destEP;
+            _sourceEndpoint     = sourceEp;
+            _destEndpoint       = destEp;
         }
 
         public async Task<IPEndPoint?> GetSourceEndpoint()
@@ -146,26 +146,28 @@ namespace ProxyProtocolSocket.Utils.Net
         #region Private methods
         private async Task GetFullHeader()
         {
-            Logger.Log($"Getting full header");
-            for (int i = 1; ; i++)
+            Logger.Log($"[{_remoteEndpoint}] getting full header");
+            for (var i = 7; i < MAX_HEADER_SIZE; i++) // Search after "PROXY" signature
             {
-                if (await GetOneByteOfPosition(i) == '\n')
-                    break;
-                if (i >= _buffer.Length)
-                    throw new Exception("Reaching the end of buffer without reaching the delimiter of version 1");
+                if (await GetOneByteAtPosition(i) != DELIMITER[1])
+                    continue;
+                if (await GetOneByteAtPosition(i - 1) != DELIMITER[0])
+                    throw new Exception("Header must end with CRLF");
+                return;
             }
+            throw new Exception("Failed to find any delimiter within the maximum header size of version 1");
         }
 
-        private async Task GetBytesToPosition(int position)
+        private async Task GetBytesTillBufferSize(int size)
         {
-            if (position <= _bufferPosition)
+            if (size <= _bufferSize)
                 return;
-            await GetBytesFromStream(position - _bufferPosition);
+            await GetBytesFromStream(size - _bufferSize);
         }
 
         private async Task GetBytesFromStream(int length)
         {
-            if ((_bufferPosition + length) > _buffer.Length)
+            if (_bufferSize + length > _buffer.Length)
                 throw new InternalBufferOverflowException();
 
             while (length > 0)
@@ -173,31 +175,18 @@ namespace ProxyProtocolSocket.Utils.Net
                 if (!_stream.DataAvailable)
                     throw new EndOfStreamException();
 
-                int count = await _stream.ReadAsync(_buffer, _bufferPosition, length);
+                var count = await _stream.ReadAsync(_buffer.AsMemory(_bufferSize, length));
                 length -= count;
-                _bufferPosition += count;
+                _bufferSize += count;
             }
         }
 
-        private async Task<byte> GetOneByteOfPosition(int position)
+        private async Task<byte> GetOneByteAtPosition(int position)
         {
-            await GetBytesToPosition(position);
-            return _buffer[position - 1];
+            await GetBytesTillBufferSize(position + 1);
+            return _buffer[position];
         }
-
-        private byte GetOneByteFromStream()
-        {
-            if ((_bufferPosition + 1) > _buffer.Length)
-                throw new InternalBufferOverflowException();
-
-            int readState = _stream.ReadByte();
-            if (readState < 0)
-                throw new EndOfStreamException();
-
-            _buffer[_bufferPosition] = (byte)readState;
-            _bufferPosition++;
-            return (byte)readState;
-        }
+        
         #endregion
     }
 }
